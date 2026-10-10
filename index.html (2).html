@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Warble Wing – a voice-flight game</title>
+<style>
+:root{--bg:#070a1c;--ink:#e8ecff;--accent:#5eead4;--warm:#fbbf24;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;overflow:hidden}
+body{display:flex;align-items:center;justify-content:center}
+#stage{position:relative;height:100%;max-height:100vh;aspect-ratio:480/720;max-width:100vw;container-type:inline-size;--u:calc(100cqw/480);touch-action:none;user-select:none}
+canvas{width:100%;height:100%;display:block;background:#0b1030}
+#bird{position:absolute;width:calc(var(--u)*44);height:calc(var(--u)*36);transform:translate(-50%,-50%);pointer-events:none;display:none}
+#bird i{position:absolute;display:block}
+.body{inset:0;border-radius:50% 50% 46% 46%;background:radial-gradient(circle at 35% 30%,#fff7b0,#fbbf24 55%,#f59e0b);box-shadow:0 0 calc(var(--u)*16) #5eead4aa}
+.wing{left:calc(var(--u)*6);top:calc(var(--u)*17);width:calc(var(--u)*22);height:calc(var(--u)*14);border-radius:0 80% 80% 80%;background:linear-gradient(#5eead4,#0d9488);transform-origin:20% 20%;animation:flap .28s ease-in-out infinite alternate}
+@keyframes flap{to{transform:rotate(-38deg)}}
+.eye{left:calc(var(--u)*27);top:calc(var(--u)*7);width:calc(var(--u)*13);height:calc(var(--u)*13);border-radius:50%;background:#fff}
+.eye:after{content:"";position:absolute;right:calc(var(--u)*2);top:calc(var(--u)*4);width:calc(var(--u)*6);height:calc(var(--u)*6);border-radius:50%;background:#111}
+.beak{left:calc(var(--u)*38);top:calc(var(--u)*17);width:calc(var(--u)*13);height:calc(var(--u)*10);background:#fb7185;border-radius:30% 90% 90% 30%}
+.tail{left:calc(var(--u)*-8);top:calc(var(--u)*12);width:calc(var(--u)*14);height:calc(var(--u)*12);background:#5eead4;clip-path:polygon(100% 0,0 50%,100% 100%)}
+.open .beak{height:calc(var(--u)*14);top:calc(var(--u)*15)}
+#hud{position:absolute;inset:0;pointer-events:none;display:none}
+#score{position:absolute;top:3%;width:100%;text-align:center;font-size:calc(var(--u)*56);font-weight:800;text-shadow:0 2px 12px #000a}
+#note{position:absolute;top:3%;left:4%;font-size:calc(var(--u)*18);font-weight:700;color:var(--accent);line-height:1.3}
+#meter{position:absolute;right:4%;top:4%;width:calc(var(--u)*10);height:calc(var(--u)*90);background:#ffffff22;border-radius:9px;overflow:hidden}
+#meter b{position:absolute;bottom:0;left:0;right:0;height:0;background:var(--accent)}
+#thr{position:absolute;left:0;right:0;height:2px;background:var(--warm)}
+#fx{position:absolute;top:13%;width:100%;text-align:center;color:var(--warm);font-weight:700;font-size:calc(var(--u)*17)}
+#panel{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;text-align:center;padding:8%;background:#070a1ccc;backdrop-filter:blur(3px)}
+#panel h1{margin:0;font-size:clamp(30px,9cqw,46px);letter-spacing:.02em;background:linear-gradient(90deg,#5eead4,#fbbf24);-webkit-background-clip:text;background-clip:text;color:transparent}
+#panel p{margin:0;max-width:330px;line-height:1.45;font-size:clamp(14px,3.6cqw,17px);opacity:.92}
+button{font:inherit;font-weight:700;border:0;border-radius:999px;padding:12px 26px;background:var(--accent);color:#04201c;cursor:pointer;pointer-events:auto}
+button.alt{background:transparent;color:var(--ink);border:1px solid #ffffff55;padding:8px 18px;font-weight:500}
+#bar{width:220px;height:10px;background:#ffffff22;border-radius:6px;overflow:hidden;display:none}
+#bar b{display:block;height:100%;width:0;background:var(--warm)}
+label{font-size:13px;opacity:.85;display:flex;gap:8px;align-items:center}
+#err{color:#fda4af;font-size:13px;min-height:1em}
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="c" width="480" height="720"></canvas>
+  <div id="bird"><i class="tail"></i><i class="body"></i><i class="wing"></i><i class="eye"></i><i class="beak"></i></div>
+  <div id="hud"><div id="score">0</div><div id="note">–</div><div id="meter"><b></b><div id="thr"></div></div><div id="fx"></div></div>
+  <div id="panel"></div>
+</div>
+<script>
+(()=>{
+const W=480,H=720,CEIL=70,FLOOR=H-70,BX=130,R=15;
+const cv=document.getElementById('c'),g=cv.getContext('2d');
+const $=id=>document.getElementById(id);
+const panel=$('panel'),birdEl=$('bird'),hud=$('hud');
+let best=0;try{best=+localStorage.getItem('ww_best')||0}catch(e){}
+
+/* ---------- audio ---------- */
+let ac=null,an=null,buf=null,micOK=false,thr=0.02,level=0;
+let hist=[],lastVoice=0,curMidi=null;
+const NAMES=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const noteName=m=>NAMES[Math.round(m)%12]+(Math.floor(Math.round(m)/12)-1);
+async function startMic(){
+  ac=new (window.AudioContext||window.webkitAudioContext)();
+  const s=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:true,autoGainControl:false}});
+  const src=ac.createMediaStreamSource(s);an=ac.createAnalyser();an.fftSize=2048;src.connect(an);
+  buf=new Float32Array(an.fftSize);micOK=true;
+}
+// Autocorrelation pitch detector: returns Hz or -1
+function detect(){
+  an.getFloatTimeDomainData(buf);const N=buf.length,sr=ac.sampleRate;
+  let e=0;for(let i=0;i<N;i++)e+=buf[i]*buf[i];
+  level=Math.sqrt(e/N);
+  if(level<thr)return -1;
+  const minL=Math.floor(sr/800),maxL=Math.floor(sr/70),M=N-maxL;
+  let e0=0;for(let i=0;i<M;i++)e0+=buf[i]*buf[i];
+  const c=new Float32Array(maxL+2);let best=0;
+  for(let l=minL;l<=maxL;l++){let s=0,e1=0;for(let i=0;i<M;i++){s+=buf[i]*buf[i+l];e1+=buf[i+l]*buf[i+l]}
+    c[l]=s/Math.sqrt(e0*e1+1e-9);if(c[l]>best)best=c[l]}
+  if(best<0.55)return -1;
+  // pick the smallest lag that is a local peak near the best (avoids octave-down errors)
+  for(let l=minL+1;l<maxL;l++){
+    if(c[l]>=best*0.88&&c[l]>c[l-1]&&c[l]>=c[l+1]){
+      const a=c[l-1],b=c[l],d=c[l+1],den=a-2*b+d,sh=den?0.5*(a-d)/den:0;
+      return sr/(l+sh);}}
+  return -1;
+}
+const hzToMidi=f=>69+12*Math.log2(f/440);
+// returns smoothed midi or null; bridges brief dropouts (150ms)
+function readPitch(now){
+  if(!micOK)return null;
+  const f=detect();
+  if(f>0){hist.push(hzToMidi(f));if(hist.length>5)hist.shift();lastVoice=now;
+    const s=[...hist].sort((a,b)=>a-b);curMidi=s[s.length>>1]}
+  else if(now-lastVoice>150){hist=[];curMidi=null}
+  return curMidi;
+}
+function beep(f,d=.12,t='sine',v=.07){if(!ac)return;try{const o=ac.createOscillator(),gn=ac.createGain();o.type=t;o.frequency.value=f;gn.gain.value=v;
+  gn.gain.exponentialRampToValueAtTime(.001,ac.currentTime+d);o.connect(gn).connect(ac.destination);o.start();o.stop(ac.currentTime+d)}catch(e){}}
+
+/* ---------- state ---------- */
+let state='intro',lo=50,hi=62,calStage=0,calSamples=[];
+let y,vy,targetY,pipes,stars,score,speed,gapBonus,starCount,silent,dist,lastT=0,ptr=null,fx='',fxT=0;
+const bgStars=Array.from({length:70},()=>({x:Math.random()*W,y:Math.random()*(FLOOR-100),r:Math.random()*1.5+.4,p:Math.random()*6}));
+function reset(){y=H/2;vy=0;targetY=y;pipes=[];stars=0;score=0;speed=140;gapBonus=0;starCount=0;silent=0;dist=0;
+  for(let i=0;i<4;i++)addPipe(W+260+i*250)}
+function addPipe(x){const gy=CEIL+130+Math.random()*(FLOOR-CEIL-260);pipes.push({x,gy,passed:false,star:Math.random()<.55,taken:false,prev:null})}
+const gapSize=()=>185+(gapBonus>0?50:0);
+
+/* ---------- UI panels ---------- */
+function show(html){panel.innerHTML=html;panel.style.display='flex'}
+function hide(){panel.style.display='none'}
+function intro(){state='intro';hud.style.display='none';birdEl.style.display='none';
+  show(`<h1>Warble Wing</h1>
+  <p>Steer a glowing songbird through crystal pillars using only your <b>voice</b>. Hum or sing: <b>higher pitch = fly up</b>, lower pitch = glide down. No need to shout &mdash; a soft, steady hum works best.</p>
+  <p>Keep humming! If you go silent, the wisp sinks, and three seconds of silence ends the flight.</p>
+  <p style="font-size:13px;opacity:.7">We'll ask to use your microphone. Audio is analysed live in your browser and is never recorded or sent anywhere.</p>
+  <button id="go">Enable microphone &amp; play</button>
+  <button class="alt" id="nomic">Play without mic (hold mouse / touch)</button>
+  <div id="err"></div>`);
+  $('go').onclick=async()=>{try{await startMic();calibrate()}catch(e){$('err').textContent='Microphone unavailable ('+(e.name||'error')+'). Allow access in your browser, or play without mic.'}};
+  $('nomic').onclick=()=>{micOK=false;ready()};
+}
+function calibrate(){state='cal';calStage=0;calSamples=[];drawCal()}
+function drawCal(){show(`<h1>${calStage?'Now go high':'Find your range'}</h1>
+  <p>${calStage?'Hum a <b>high</b> note you can hold comfortably.':'Hum a <b>low</b>, comfortable note and hold it steadily.'}</p>
+  <div id="bar" style="display:block"><b></b></div>
+  <label>Mic sensitivity <input id="sens" type="range" min="1" max="60" value="${Math.round(thr*1000)}"></label>
+  <div id="nowp" style="font-weight:700;color:var(--accent);height:1.3em">–</div>`);
+  $('sens').oninput=e=>{thr=e.target.value/1000};
+}
+function ready(){state='ready';reset();hide();hud.style.display='block';birdEl.style.display='block';
+  const m=micOK?'Hum to take off!':'Hold mouse / touch to steer';
+  $('fx').textContent=m;fx=m;fxT=3;
+  $('meter').style.display=micOK?'block':'none';
+  $('thr').style.bottom=Math.min(100,thr/0.08*100)+'%';
+}
+function over(){state='over';beep(180,.5,'sawtooth',.08);
+  const nb=score>best;if(nb){best=score;try{localStorage.setItem('ww_best',best)}catch(e){}}
+  show(`<h1>${silent>=3?'The song faded…':'Crash!'}</h1>
+  <p style="font-size:clamp(20px,6cqw,28px)"><b>${score}</b> pillars &middot; <b>${stars}</b> stars</p>
+  <p>${nb?'New best score!':'Best: '+best}</p>
+  <button id="again">Fly again</button><button class="alt" id="rc">Recalibrate voice</button>`);
+  $('again').onclick=ready;$('rc').onclick=()=>micOK?calibrate():intro();
+}
+
+/* ---------- input fallback ---------- */
+const stage=$('stage');
+stage.addEventListener('pointerdown',e=>{if(e.target.closest('button,label,input'))return;ptr=e;});
+addEventListener('pointermove',e=>{if(ptr)ptr=e});
+addEventListener('pointerup',()=>ptr=null);
+function ptrY(){const r=cv.getBoundingClientRect();return Math.max(CEIL,Math.min(FLOOR,(ptr.clientY-r.top)/r.height*H))}
+
+/* ---------- loop ---------- */
+function median(a){const s=[...a].sort((x,y)=>x-y);return s[s.length>>1]}
+function step(now){
+  const dt=Math.min(.033,(now-lastT)/1000||.016);lastT=now;
+  const m=readPitch(now);
+  if(micOK){const l=Math.min(1,level/0.08);$('meter').firstElementChild.style.height=(l*100)+'%'}
+  if(state==='cal'){
+    $('nowp').textContent=m!=null?noteName(m):'(listening…)';
+    if(m!=null){calSamples.push(m)}else if(calSamples.length&&calSamples.length<45)calSamples.length=Math.max(0,calSamples.length-2);
+    const bar=document.querySelector('#bar b');if(bar)bar.style.width=Math.min(100,calSamples.length/45*100)+'%';
+    if(calSamples.length>=45){const v=median(calSamples);beep(520+calStage*300,.15);
+      if(!calStage){lo=v;calStage=1;calSamples=[];drawCal()}
+      else{hi=Math.max(v,lo+6);ready()}}
+  }
+  if(state==='ready'||state==='play'){
+    const voiced=m!=null;
+    if(micOK){
+      if(voiced){const t=Math.max(-.08,Math.min(1.08,(m-lo)/(hi-lo)));targetY=FLOOR-20-t*(FLOOR-CEIL-40)}
+    }else if(ptr)targetY=ptrY();
+    const active=micOK?voiced:!!ptr;
+    if(state==='ready'&&active){state='play';fxT=0}
+    if(state==='ready'){y=H/2+Math.sin(now/300)*8}
+    else{
+      if(active){vy=0;y+=(targetY-y)*Math.min(1,dt*7);silent=0}
+      else{vy=Math.min(vy+420*dt,380);y+=vy*dt;silent+=dt; if(silent>1&&silent<3)fxT=.1,fx='Keep humming… '+(3-silent).toFixed(1)+'s'; if(silent>=3){over()}}
+      update(dt);
+    }
+    birdEl.classList.toggle('open',active);
+    const rot=active?Math.max(-25,Math.min(25,(targetY-y)*.4)):Math.min(60,vy*.14);
+    birdEl.style.left=(BX/W*100)+'%';birdEl.style.top=(y/H*100)+'%';birdEl.style.transform=`translate(-50%,-50%) rotate(${rot}deg)`;
+    $('note').textContent=micOK?(voiced?'♪ '+noteName(m):'♪ –'):'';
+    $('score').textContent=score;
+    if(fxT>0){fxT-=dt;$('fx').textContent=fx}else $('fx').textContent='';
+  }
+  draw(now);
+  requestAnimationFrame(step);
+}
+function update(dt){
+  speed=Math.min(220,140+score*3);dist+=speed*dt;
+  if(gapBonus>0){gapBonus-=dt;if(gapBonus<=0){fx='Resonance faded';fxT=1.5}}
+  for(const p of pipes)p.x-=speed*dt;
+  if(pipes[0].x<-80){pipes.shift();addPipe(pipes[pipes.length-1].x+250)}
+  const gs=gapSize()/2;
+  for(const p of pipes){
+    if(!p.passed&&p.x+30<BX){p.passed=true;score++;beep(660+Math.min(score,20)*20,.1)}
+    if(p.star&&!p.taken&&Math.hypot(p.x-BX,p.gy-y)<R+14){p.taken=true;stars++;score++;beep(990,.15,'triangle');
+      if(stars%5===0){gapBonus=7;fx='✨ Resonance! Wider gaps ✨';fxT=2.5}else{fx='+1 star';fxT=.7}}
+    if(BX+R-4>p.x-30&&BX-R+4<p.x+30){ if(y-R+4<p.gy-gs||y+R-4>p.gy+gs){over();return}}
+  }
+  if(y>FLOOR-R||y<CEIL-30)over();
+}
+
+/* ---------- drawing ---------- */
+function draw(t){
+  const s=t/1000;
+  let gr=g.createLinearGradient(0,0,0,H);gr.addColorStop(0,'#070a1c');gr.addColorStop(.6,'#16134a');gr.addColorStop(1,'#2a1a5e');
+  g.fillStyle=gr;g.fillRect(0,0,W,H);
+  for(const b of bgStars){g.globalAlpha=.4+.6*Math.abs(Math.sin(s+b.p));g.fillStyle='#fff';g.beginPath();g.arc(b.x,b.y,b.r,0,7);g.fill()}
+  g.globalAlpha=.16;
+  for(let i=0;i<3;i++){g.fillStyle=['#5eead4','#a78bfa','#34d399'][i];g.beginPath();g.moveTo(0,120+i*40);
+    for(let x=0;x<=W;x+=20)g.lineTo(x,120+i*40+Math.sin(x/70+s*.6+i)*28);
+    g.lineTo(W,200+i*40);for(let x=W;x>=0;x-=20)g.lineTo(x,210+i*40+Math.sin(x/60+s*.5+i)*20);g.fill()}
+  g.globalAlpha=1;
+  // parallax ridges
+  const off=(dist||s*20);
+  for(const [c,k,h,a] of [['#1b1650',.2,150,60],['#241a63',.45,100,40]]){
+    g.fillStyle=c;g.beginPath();g.moveTo(0,FLOOR);
+    for(let x=0;x<=W+10;x+=10)g.lineTo(x,FLOOR-h-Math.sin((x+off*k)/55)*a*.5-Math.sin((x+off*k)/23)*a*.2);
+    g.lineTo(W,FLOOR);g.fill()}
+  // pillars
+  if(pipes){const gs=gapSize()/2;
+    for(const p of pipes){
+      const lg=g.createLinearGradient(p.x-30,0,p.x+30,0);lg.addColorStop(0,'#0f766e');lg.addColorStop(.5,'#5eead4');lg.addColorStop(1,'#0f766e');
+      g.fillStyle=lg;g.shadowColor='#5eead4';g.shadowBlur=gapBonus>0?24:10;
+      g.fillRect(p.x-26,0,52,p.gy-gs);g.fillRect(p.x-26,p.gy+gs,52,FLOOR-p.gy-gs);
+      g.fillRect(p.x-32,p.gy-gs-18,64,18);g.fillRect(p.x-32,p.gy+gs,64,18);g.shadowBlur=0;
+      g.fillStyle='#ffffff30';g.fillRect(p.x-18,0,5,p.gy-gs);g.fillRect(p.x-18,p.gy+gs+18,5,FLOOR);
+      if(p.star&&!p.taken){g.save();g.translate(p.x,p.gy);g.rotate(s*2);g.fillStyle='#fbbf24';g.shadowColor='#fbbf24';g.shadowBlur=16;
+        g.beginPath();for(let i=0;i<10;i++){const r=i%2?6:14,a=i*Math.PI/5;g.lineTo(Math.sin(a)*r,-Math.cos(a)*r)}g.fill();g.restore();g.shadowBlur=0}
+    }}
+  // ground
+  g.fillStyle='#0c0a2e';g.fillRect(0,FLOOR,W,H-FLOOR);g.fillStyle='#5eead4';g.fillRect(0,FLOOR,W,3);
+  g.fillStyle='#5eead455';for(let x=-(off%40);x<W;x+=40)g.fillRect(x,FLOOR+14,20,3);
+  g.fillStyle='#0c0a2e';g.fillRect(0,0,W,CEIL-60);
+  // target ring while voicing
+  if((state==='play'||state==='ready')&&targetY!=null&&(curMidi!=null||ptr)){
+    g.strokeStyle='#fbbf2499';g.lineWidth=2;g.setLineDash([4,5]);g.beginPath();g.arc(BX,targetY,R+8,0,7);g.stroke();g.setLineDash([]);
+    g.fillStyle='#fbbf2455';g.fillRect(BX+26,targetY-1,W,2);
+  }
+}
+intro();reset();requestAnimationFrame(step);
+})();
+</script>
+</body>
+</html>
